@@ -107,12 +107,8 @@ class RTSPClient(basic.LineReceiver):
 
     session = None # RTSP Session
 
-    sent_options = False
     sent_setup = False
     sent_play = False
-    sent_describe = False
-    sent_parameter = False
-    sent_bandwidth = False
 
     def sendCommand(self, command, path):
         """ Sends off an RTSP command
@@ -210,16 +206,13 @@ class RTSPClient(basic.LineReceiver):
             key, val = line.split(':', 1)
             val = val.lstrip()
             self.handleHeader(key, val)
-            if key.lower() == 'content-length':
-                self.content_length = int(val)
-                self.length = self.content_length
         else:
             # End of the headers has been reached
             if self.content_length is not None:
-                self._handleEndHeaders()
+                self._handleEndHeaders(self.headers)
                 self.setRawMode()
             else:
-                self._handleEndHeaders()
+                self._handleEndHeaders(self.headers)
             self.firstLine = 1
 
     def connectionMade(self):
@@ -238,7 +231,7 @@ class RTSPClient(basic.LineReceiver):
 
     def handleStatus(self, version, status, message):
         """ Called when the status header is received """
-        print(status)
+        print('Status: %s' % status)
 
     def handleHeader(self, key, value):
         """ Called when a single header is received
@@ -278,17 +271,27 @@ class RTSPClient(basic.LineReceiver):
             return True
         return False
 
-    def _handleEndHeaders(self):
+    def _handleEndHeaders(self, headers):
         """ Internal handleEndHeaders
-        Checks the server's CSeq """
-        if self.headers.get('cseq'):
-            serverCSeq = int(self.headers['cseq'][0])
+        Checks the server's CSeq and for content-length """
+        try: self.header_file
+        except AttributeError:
+            self.header_file = open('headers.txt', 'wb')
+        headerstr = '\r\n'.join('%s: %s' % (k,v[0]) for k,v in headers.items())
+        self.header_file.write(headerstr)
+        self.header_file.write('\r\n')
+
+        if headers.get('cseq'):
+            serverCSeq = int(headers['cseq'][0])
             if serverCSeq != self.cseq - 1:
                 print('Server CSeq != Client CSeq: %s != %s' %
                       (serverCSeq, self.cseq - 1))
-        self.handleEndHeaders()
+        if headers.get('content-length'):
+            self.content_length = int(headers['content-length'][0])
+            self.length = self.content_length
+        self.handleEndHeaders(headers)
 
-    def handleEndHeaders(self):
+    def handleEndHeaders(self, headers):
         """ Called when all headers have been received """
         if self.content_length is not None:
             # We call sendNextMessage after the response has been received
@@ -303,7 +306,6 @@ class RTSPClient(basic.LineReceiver):
         if self.content_length:
             self.content_length = None
             self.handleContentResponse(data, self.content_type)
-            print('resp end')
             self.sendNextMessage()
             self.content_type = None
         elif self.rtsp_length:
@@ -321,7 +323,7 @@ class RTSPClient(basic.LineReceiver):
 
     def rawDataReceived(self, data):
         """ Called when data is received in raw data mode
-        Gathers self.content-length worth of data
+        Gathers self.content-length worth of data in attach_buffer
         Returns what it doesn't use """
         if self.length is not None:
             self.attach_buffer.write(data)
@@ -367,6 +369,11 @@ class RDTClient(RTSPClient):
     prev_stream_num = None
     streamids = []
 
+    sent_options = False
+    sent_describe = False
+    sent_parameter = False
+    sent_bandwidth = False
+
     EOF = 0xff06
     LATENCY_REPORT = 0xff08
 
@@ -390,10 +397,9 @@ class RDTClient(RTSPClient):
     #    .1.. .... = Slow data & 0x40: 1
     #    ..00 0011 = Asm Rule & 0x3F: 3
 
-    def handleEndHeaders(self):
-        if self.headers.get('realchallenge1'):
-            self.realchallenge1 = self.headers['realchallenge1'][0]
-        print('heh %s' % self.content_length)        
+    def handleEndHeaders(self, headers):
+        if headers.get('realchallenge1'):
+            self.realchallenge1 = headers['realchallenge1'][0]
         if self.content_length is None:
             self.sendNextMessage()
 
@@ -535,7 +541,6 @@ class RDTClient(RTSPClient):
         """ This method goes in order sending messages to the server:
         OPTIONS, DESCRIBE, SETUP, SET_PARAMETER, SET_PARAMETER, PLAY
         Returns True if it sent a packet, False if it didn't """
-        print('nxt msg')
         if not self.sent_options:
             self.sent_options = True
             self._sendOptions()
@@ -546,13 +551,11 @@ class RDTClient(RTSPClient):
             return True
         if not self.sent_setup:
             self.sent_setup = True
-            print('setup')
             challenge_tuple = RealChallenge.compute(self.realchallenge1)
             headers = {'RealChallenge2': '%s, sd=%s' % challenge_tuple}
             self._sendSetup(headers)
             return True
         if self.streamids:
-            print('setup')
             self._sendSetup(streamid=self.streamids.pop(0))
             return True
         if not self.sent_parameter:
