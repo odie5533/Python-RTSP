@@ -22,7 +22,7 @@ from cStringIO import StringIO
 from optparse import OptionParser
 from urlparse import urlsplit
 from rmff import *
-from rtsp import RTSPClient
+from rtsp import RTSPClient, RTSPClientFactory
 from sdpp import Sdpplin
 import base64
 import sys
@@ -117,6 +117,29 @@ class RDTClient(RTSPClient):
     #    .1.. .... = Slow data & 0x40: 1
     #    ..00 0011 = Asm Rule & 0x3F: 3
 
+    def select_mlti_data(self, mlti_chunk, selection):
+        if not mlti_chunk.startswith('MLTI'):
+            print('MLTI tag missing')
+            return mlti_chunk
+        idx = 4 # past 'MLTI'
+        numrules = struct.unpack('!H', mlti_chunk[idx:idx + 2])[0]
+        idx += 2
+        rules = []
+        for i in range(0, numrules):
+            rules.append(struct.unpack('!H', mlti_chunk[idx:idx + 2])[0])
+            idx += 2
+        if selection > numrules:
+            return 0
+        numcodecs = struct.unpack('!H', mlti_chunk[idx:idx + 2])[0]
+        idx += 2
+        codecs = []
+        for i in range(numcodecs):
+            codec_length = struct.unpack('!I', mlti_chunk[idx:idx + 4])[0]
+            idx += 4
+            codecs.append(mlti_chunk[idx:idx + codec_length])
+            idx += codec_length
+        return codecs[rules[selection]]
+
     def handleEndHeaders(self, headers):
         if headers.get('realchallenge1'):
             self.realchallenge1 = headers['realchallenge1'][0]
@@ -128,7 +151,6 @@ class RDTClient(RTSPClient):
         header = rmff_header_t()
         try: abstract = sdp['Abstract']
         except KeyError: abstract = ''
-        print(ord(sdp['Title'][-1]))
         header.fileheader = rmff_fileheader_t(4 + sdp['StreamCount'])
         header.cont = rmff_cont_t(sdp['Title'], sdp['Author'],
                                   sdp['Copyright'], abstract)
@@ -142,11 +164,12 @@ class RDTClient(RTSPClient):
 
         for s in sdp.streams:
             # Avg packet size seems off
+            mlti = self.select_mlti_data(s['OpaqueData'], 2)
             mdpr = rmff_mdpr_t(s['streamid'], s['MaxBitRate'],
                                s['AvgBitRate'], s['MaxPacketSize'],
                                s['AvgPacketSize'], s['StartTime'],
                                s['Preroll'], s.duration,
-                               s['StreamName'], s['mimetype'], s['OpaqueData'])
+                               s['StreamName'], s['mimetype'], mlti)
             header.streams.append(mdpr)
             if s.duration > duration:
                 duration = s.duration
@@ -177,13 +200,20 @@ class RDTClient(RTSPClient):
             self.subscribe = 'stream=0;rule=3,stream=0;rule=4,stream=1;rule=2,stream=1;rule=3'
             self.out_file.write(self.header.dump())
             self.num_packets = 0
+            self.data_size = 0
 
     def handleRDTData(self, data, rmff_ph):
-        self.out_file.write(str(rmff_ph))
+        self.num_packets += 1
+        self.data_size += len(data)
+        rmff_str = str(rmff_ph)
+        self.data_size += len(rmff_str)
+        self.out_file.write(rmff_str)
         self.out_file.write(data)
 
     def handleStreamEnd(self):
         self.header.prop.num_packets = self.num_packets
+        self.header.data.num_packets = self.num_packets
+        self.header.data.size += self.data_size
         if self.out_file:
             self.out_file.seek(0)
             self.out_file.write(self.header.dump())
@@ -213,7 +243,6 @@ class RDTClient(RTSPClient):
         if packet_type == self.LATENCY_REPORT:
             return
 
-        self.num_packets += 1
         timestamp = struct.unpack('!I', header[4:8])[0]
         stream_num = (packet_flags >> 1) & 0x1f
         flags2 = struct.unpack('B', header[3])[0]
@@ -259,6 +288,10 @@ class RDTClient(RTSPClient):
                 # If no length is given, assume remaining data is one packet
                 self.handleRDTPacket(data)
                 break
+
+    # ----------------------
+    # Packet Sending Methods
+    # ----------------------
 
     def _sendOptions(self, headers={}):
         target = '%s://%s:%s' % (self.factory.scheme,
@@ -358,59 +391,6 @@ class RDTClient(RTSPClient):
             self._sendPlay()
             return True
         return False
-
-class RTSPClientFactory(client.HTTPClientFactory):
-    """ Holds the RTSP default headers """
-    protocol = RTSPClient
-    # The following 4 values are all related
-    # Do not change them
-    GUID = '00000000-0000-0000-0000-000000000000'
-    CLIENT_CHALLENGE = '9e26d33f2984236010ef6253fb1887f7'
-    PLAYER_START_TIME = '[28/03/2003:22:50:23 00:00]'
-    companyID = 'KnKV4M4I/B2FjJ1TToLycw=='
-
-    agent = 'RealMedia Player Version 6.0.9.1235 (linux-2.0-libc6-i386-gcc2.95)'
-    clientID = 'Linux_2.4_6.0.9.1235_play32_RN01_EN_586'
-
-    data_received = 0
-
-    netloc = None
-
-    def __init__(self, url, filename, timeout=0, agent=None):
-        self.timeout = timeout
-        if agent is None:
-            agent = self.agent
-        self.filename = filename
-
-        self.setURL(url)
-        self.waiting = 1
-        self.deferred = defer.Deferred()
-
-    def setURL(self, url):
-        self.url = url
-        parsed_url = urlsplit(url)
-        self.scheme, self.netloc, self.path, self.query, self.fragment = parsed_url
-        self.host = parsed_url.hostname
-        if self.host is None:
-            self.host = self.netloc
-
-        self.username = parsed_url.username
-        self.password = parsed_url.password
-
-        self.port = parsed_url.port
-        if self.port is None:
-            self.port = 554
-
-    def success(self, result):
-        if self.waiting:
-            self.waiting = 0
-            self.deferred.callback(result)
-
-    def error(self, reason):
-        if self.waiting:
-            self.waiting = 0
-            self.deferred.errback(reason)
-
 
 def success(result):
     if result == 0:

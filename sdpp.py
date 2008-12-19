@@ -13,7 +13,7 @@ def _parse_sdpplin_line(item):
         if type == 'integer':
             value = int(value)
         if type == 'buffer':
-            value = base64.b64decode(value[1:-1]).strip(chr(0))
+            value = base64.b64decode(value[1:-1])
         if type == 'string':
             value = value[1:-1]
     return name, value
@@ -149,6 +149,8 @@ class Sdpplin(SDPParser):
         # Adds attributes to self
         for item in sdp.a:
             name, value = _parse_sdpplin_line(item)
+            if name in ['Title', 'Author', 'Copyright']:
+                value = value.strip(chr(0))
             self.attributes[name] = value
 
         # Adds SdpplinMediaDesc to streams[] for each SDPMediaDesc

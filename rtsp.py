@@ -294,3 +294,57 @@ class RTSPClient(basic.LineReceiver):
         """ Tells the server to play the stream for you """
         headers['Range'] = 'npt=%s' % range
         self.sendMethod('PLAY', target, headers)
+
+
+
+class RTSPClientFactory(client.HTTPClientFactory):
+    """ Holds the RTSP default headers """
+    protocol = RTSPClient
+    # The following 4 values are all related
+    # Do not change them
+    GUID = '00000000-0000-0000-0000-000000000000'
+    CLIENT_CHALLENGE = '9e26d33f2984236010ef6253fb1887f7'
+    PLAYER_START_TIME = '[28/03/2003:22:50:23 00:00]'
+    companyID = 'KnKV4M4I/B2FjJ1TToLycw=='
+
+    agent = 'RealMedia Player Version 6.0.9.1235 (linux-2.0-libc6-i386-gcc2.95)'
+    clientID = 'Linux_2.4_6.0.9.1235_play32_RN01_EN_586'
+
+    data_received = 0
+
+    netloc = None
+
+    def __init__(self, url, filename, timeout=0, agent=None):
+        self.timeout = timeout
+        if agent is None:
+            agent = self.agent
+        self.filename = filename
+
+        self.setURL(url)
+        self.waiting = 1
+        self.deferred = defer.Deferred()
+
+    def setURL(self, url):
+        self.url = url
+        parsed_url = urlsplit(url)
+        self.scheme, self.netloc, self.path, self.query, self.fragment = parsed_url
+        self.host = parsed_url.hostname
+        if self.host is None:
+            self.host = self.netloc
+
+        self.username = parsed_url.username
+        self.password = parsed_url.password
+
+        self.port = parsed_url.port
+        if self.port is None:
+            self.port = 554
+
+    def success(self, result):
+        if self.waiting:
+            self.waiting = 0
+            self.deferred.callback(result)
+
+    def error(self, reason):
+        if self.waiting:
+            self.waiting = 0
+            self.deferred.errback(reason)
