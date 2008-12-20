@@ -12,6 +12,12 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+#
+# To do:
+#   fix avg packet size computation for file header
+#   find bug where the program just spits out stopping factory and doesn't
+#     return the deferred callback/errback
 
 from twisted.web import client
 from twisted.internet import defer, reactor
@@ -26,6 +32,7 @@ import sys
 import math
 import time
 import struct
+import re
 from md5 import md5
 from rmff import *
 from rtsp import RTSPClient, RTSPClientFactory
@@ -172,7 +179,6 @@ class RDTClient(RTSPClient):
             rulebook = s['ASMRuleBook']
             symbols = {'Bandwidth':self.factory.bandwidth}
             rulematches, symbols = Asmrp.asmrp_match(rulebook, symbols)
-            print(rulematches)
             self.streammatches[s['streamid']] = rulematches
             mlti = self.select_mlti_data(s['OpaqueData'], rulematches[0])
             mdpr = rmff_mdpr_t(s['streamid'], s['MaxBitRate'],
@@ -197,12 +203,28 @@ class RDTClient(RTSPClient):
                                   sdp['Flags'])
         return header
 
+    def heartbeat(self):
+        target = '%s://%s:%s' % (self.factory.scheme,
+                                 self.factory.host,
+                                 self.factory.port)
+        headers = {}
+        headers['User-Agent'] = self.factory.agent
+        headers['PlayerStarttime'] = self.factory.PLAYER_START_TIME
+        headers['CompanyID'] = self.factory.companyID
+        headers['GUID'] = self.factory.GUID
+        headers['RegionData'] = '0'
+        headers['ClientID'] = self.factory.clientID
+        headers['Pragma'] = 'initiate-session'
+        self.sendOptions('*', headers)
+        reactor.callLater(30, self.heartbeat)
+
     def handleContentResponse(self, data, content_type):
         """ Called when the entire content-length has been received """
         f = open('sdp.txt', 'w')
         f.write(data)
         f.close()
         if content_type == 'application/sdp':
+            reactor.callLater(30, self.heartbeat)
             self.out_file = open(self.factory.filename, 'wb')
             self.header = self.handleSdp(data)
             self.streamids = [i for i in range(self.header.prop.num_streams)]
@@ -211,7 +233,6 @@ class RDTClient(RTSPClient):
                 for r in rules:
                     self.subscribe += 'stream=%s;rule=%s,' % (i,r)
             self.subscribe = self.subscribe[:-1] # Removes trailing comma
-            print(self.subscribe)
             self.out_file.write(self.header.dump())
             self.num_packets = 0
             self.data_size = 0
@@ -426,17 +447,16 @@ def progress(factory):
 if __name__ == '__main__':
     parser = OptionParser()
     parser.add_option('-u', '', dest='url', help='url to download',
-                      metavar='URL',
-                      default='rtsp://212.58.252.3:554/radio4/1530_mon.ra')
+                      metavar='URL')
     parser.add_option('-f', '', dest='file', help='file to save to',
-                      metavar='FILENAME',
-                      default='out.ra')
+                      metavar='FILENAME')
     options, args = parser.parse_args()
-    options.url = 'rtsp://mtilatti:A20143335@216.47.135.110/secure/f08/ECON-423-1/10_08_08/ECON-423-1_10_08_08.rm'
     if options.url is None:
         print('You must enter a url to download\n')
         parser.print_help()
         exit()
+    if not options.file:
+        options.file = re.search('[^/]*$', options.url).group(0)
     if not options.file or len(options.file) < 1:
         print('Invalid file name specified\n')
         parser.print_help()

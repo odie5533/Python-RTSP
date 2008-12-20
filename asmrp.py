@@ -14,6 +14,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import logging
+
 class RuleString:
     """ Buffer containing the ASM rule book """
     def __init__(self, string):
@@ -21,11 +23,14 @@ class RuleString:
         self.idx = 0
 
     def eof(self):
-        return self.idx == len(self._str)
+        return self.idx >= len(self._str)-1
+
+    def __getitem__(self, key):
+        return self._str[self.idx + key]
 
     def next(self):
-        self.sym = self._str[self.idx]
         self.idx += 1
+        self.sym = self._str[self.idx]
         return self.sym
 
     def nextChar(self):
@@ -41,7 +46,7 @@ class RuleString:
             return self.nextChar()
 
     def dump(self, amount):
-        return self._str[self.idx - 1:self.idx + amount - 1]
+        return self._str[self.idx:self.idx + amount]
         
 
 class Asmrp:
@@ -49,6 +54,11 @@ class Asmrp:
     special_chars = ['$','#',')','(']
 
     def __init__(self, rules, symbols):
+        logger = logging.getLogger('ASMRP')
+#        logging.basicConfig(level=logging.DEBUG)
+        
+        self.logger = logger
+        
         self.rules = rules
         self.matches = []
         self.symbols = symbols
@@ -61,44 +71,44 @@ class Asmrp:
             symbol += rules.sym
             rules.next()
         symbol = symbol.strip()
-        print(self.indent + 'Found symbol: %s => %s' % (symbol, self.symbols[symbol]))
+        self.logger.debug(self.indent + 'Found symbol: %s => %s' % (symbol, self.symbols[symbol]))
         return self.symbols[symbol]
 
     def asmrp_operand(self, rules):
         rules.isCharElseNext()
-        print(self.indent + 'Finding operand: %s' % rules.sym)
+        self.logger.debug(self.indent + 'Finding operand: %s' % rules.sym)
         if rules.sym == '$':
-            print(self.indent + 'Found variable symbol')
+            self.logger.debug(self.indent + 'Found variable symbol')
             rules.next()
             return self.asmrp_find_id(rules)
         elif rules.sym.isdigit():
-            print(self.indent + 'Found numerical operand')
+            self.logger.debug(self.indent + 'Found numerical operand')
             number = ''
             while rules.sym.isdigit():
                 number += rules.sym
                 rules.next()
-            print(self.indent + 'Number: %s' % number)
+            self.logger.debug(self.indent + 'Number: %s' % number)
             return int(number)
         elif rules.sym == '(':
-            print(self.indent + 'Open paren')
+            self.logger.debug(self.indent + 'Open paren')
             rules.nextChar()
             self.indent += ' '
             ret = self.asmrp_condition(rules)
             rules.isCharElseNext()
             self.indent = self.indent[:-1]
             if rules.sym != ')':
-                print(self.indent + 'Expected right paren!')
+                self.logger.debug(self.indent + 'Expected right paren!')
             else:
-                print(self.indent + 'Close paren')
+                self.logger.debug(self.indent + 'Close paren')
             rules.nextChar()
             return ret
         else:
-            print('Unknown operand!')
+            self.logger.debug('Unknown operand!')
             exit()
 
     def asmrp_comp_expression(self, rules):
         """ Evaluates an expression such as $Bandwidth > 500 """
-        print(self.indent + 'Expression getting a operand')
+        self.logger.debug(self.indent + 'Expression getting a operand')
         self.indent += ' '
         a = self.asmrp_operand(rules)
         self.indent = self.indent[:-1]
@@ -110,12 +120,12 @@ class Asmrp:
         if rules.sym == '=':
             operator += '='
             rules.nextChar()
-        print(self.indent + 'Expression operator: %s' % operator)
-        print(self.indent + 'Expression getting b operand')
+        self.logger.debug(self.indent + 'Expression operator: %s' % operator)
+        self.logger.debug(self.indent + 'Expression getting b operand')
         self.indent += ' '
         b = self.asmrp_operand(rules)
         self.indent = self.indent[:-1]
-        print(self.indent + 'Expression: %s %s %s' % (a,operator,b))
+        self.logger.debug(self.indent + 'Expression: %s %s %s' % (a,operator,b))
         if operator == '<':
             return a < b
         if operator == '<=':
@@ -130,59 +140,64 @@ class Asmrp:
     def asmrp_condition(self, rules):
         """ Evaluates a condition
         e.g. $Bandwidth > 500 && $Bandwidth < 1000 """
-        print(self.indent + 'Condition getting a operand')
+        self.logger.debug(self.indent + 'Condition getting a operand')
         self.indent += ' '
         a = self.asmrp_comp_expression(rules)
         self.indent = self.indent[:-1]
-        print(self.indent + 'Condition a: %s' % a)
+        self.logger.debug(self.indent + 'Condition a: %s' % a)
         while rules.dump(2) in ['&&','||']:
             operator = rules.dump(2)
-            print(self.indent + 'Condition Operator: %s' % operator)
+            self.logger.debug(self.indent + 'Condition Operator: %s' % operator)
             rules.nextChar()
             rules.nextChar()
             b = self.asmrp_comp_expression(rules)
-            print(self.indent + 'Condition: %s %s %s' % (a,operator,b))
+            self.logger.debug(self.indent + 'Condition: %s %s %s' % (a,operator,b))
             if operator == '&&':
                 return a and b
             if operator == '||':
                 return a or b
-        print(self.indent + 'Returning condition: %s' % a)
+        self.logger.debug(self.indent + 'Returning condition: %s' % a)
         return a
 
     def asmrp_assignment(self, rules):
-        print(self.indent + 'Performing assignment')
+        self.logger.debug(self.indent + 'Performing assignment')
         name = ''
         while rules.sym != '=':
             name += rules.sym
             rules.next()
         name = name.strip()
-        print(self.indent + 'Assignment name: %s' % name)
+        self.logger.debug(self.indent + 'Assignment name: %s' % name)
         rules.nextChar()
-        value = ''
-        while rules.sym not in [',',';']:
-            value += rules.sym
+        value = rules[0]
+        while rules[0] not in [',',';'] and not rules.eof():
             rules.next()
-        value = value.strip('"')
+            value += rules.sym
+        while ord(value[-1]) < 33 or value[-1] in [',',';']:
+            value = value[:-1]
         self.symbols[name] = value
-        print(self.indent + 'Assignment [%s] = %s' % (name,value))
+        self.logger.debug(self.indent + 'Assignment [%s] = %s' % (name,value))
 
     def asmrp_rule(self, rules):
-        oper = rules.next()
-        print('Next oper: %s' % oper)
+        oper = rules[0]
+        self.logger.debug('Next oper: %s' % oper)
         if oper == '#':
-            print('# Assignment')
+            self.logger.debug('# Assignment')
             # Assignment
             rules.nextChar()
             self.indent += ' '
             ret = self.asmrp_condition(rules)
-            print('Assignment condition result: %s' % ret)
+            self.logger.debug('Assignment condition result: %s' % ret)
             if ret:
-                while rules.sym == ',':
+                while rules[0] == ',' and not rules.eof():
                     rules.nextChar()
                     self.asmrp_assignment(rules)
+                if not rules.eof():
+                    rules.nextChar()
                 return True
             else:
-                while rules.sym != ';':
+                while rules[0] != ';' and not rules.eof():
+                    rules.nextChar()
+                if not rules.eof():
                     rules.nextChar()
 
     def asmrp_eval(self, rules):

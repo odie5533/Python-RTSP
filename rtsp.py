@@ -142,11 +142,9 @@ class RTSPClient(basic.LineReceiver):
             self.handleHeader(key, val)
         else:
             # End of the headers has been reached
+            self._handleEndHeaders(self.headers)
             if self.content_length is not None:
-                self._handleEndHeaders(self.headers)
                 self.setRawMode()
-            else:
-                self._handleEndHeaders(self.headers)
             self.firstLine = 1
 
     def connectionMade(self):
@@ -165,7 +163,11 @@ class RTSPClient(basic.LineReceiver):
 
     def handleStatus(self, version, status, message):
         """ Called when the status header is received """
-        print('Status: %s\nVersion: %s\nMessage: %s' % (status,version,message))
+        if status == '404':
+            self.transport.loseConnection()
+            self.factory.error(failure.Failure('404'))
+            return
+        print('Status: %s %s %s' % (status,message,version))
 
     def handleHeader(self, key, value):
         """ Called when a single header is received
@@ -310,15 +312,13 @@ class RTSPClientFactory(client.HTTPClientFactory):
     agent = 'RealMedia Player Version 6.0.9.1235 (linux-2.0-libc6-i386-gcc2.95)'
     clientID = 'Linux_2.4_6.0.9.1235_play32_RN01_EN_586'
 
-    data_received = 0
-
-    netloc = None
-
     def __init__(self, url, filename, timeout=0, agent=None):
         self.timeout = timeout
         if agent is None:
             agent = self.agent
         self.filename = filename
+
+        self.data_received = 0
 
         self.setURL(url)
         self.waiting = 1
@@ -345,6 +345,7 @@ class RTSPClientFactory(client.HTTPClientFactory):
             self.deferred.callback(result)
 
     def error(self, reason):
+        print(reason.getErrorMessage())
         if self.waiting:
             self.waiting = 0
             self.deferred.errback(reason)
