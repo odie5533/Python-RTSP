@@ -21,15 +21,17 @@ from twisted.python.util import InsensitiveDict
 from cStringIO import StringIO
 from optparse import OptionParser
 from urlparse import urlsplit
-from rmff import *
-from rtsp import RTSPClient, RTSPClientFactory
-from sdpp import Sdpplin
 import base64
 import sys
 import math
 import time
 import struct
 from md5 import md5
+from rmff import *
+from rtsp import RTSPClient, RTSPClientFactory
+from sdpp import Sdpplin
+from asmrp import Asmrp
+
 
 # http://blogmag.net/blog/read/38/Print_human_readable_file_size
 def sizeof_fmt(num):
@@ -147,6 +149,8 @@ class RDTClient(RTSPClient):
             self.sendNextMessage()
 
     def handleSdp(self, data):
+        """ Called with SDP Response data
+        Uses the SDP response to construct the file header """
         sdp = Sdpplin(data)
         header = rmff_header_t()
         try: abstract = sdp['Abstract']
@@ -161,10 +165,16 @@ class RDTClient(RTSPClient):
         avg_bit_rate = 0
         max_packet_size = 0
         avg_packet_size = None
-
+        
+        self.streammatches = {}
         for s in sdp.streams:
             # Avg packet size seems off
-            mlti = self.select_mlti_data(s['OpaqueData'], 2)
+            rulebook = s['ASMRuleBook']
+            symbols = {'Bandwidth':self.factory.bandwidth}
+            rulematches, symbols = Asmrp.asmrp_match(rulebook, symbols)
+            print(rulematches)
+            self.streammatches[s['streamid']] = rulematches
+            mlti = self.select_mlti_data(s['OpaqueData'], rulematches[0])
             mdpr = rmff_mdpr_t(s['streamid'], s['MaxBitRate'],
                                s['AvgBitRate'], s['MaxPacketSize'],
                                s['AvgPacketSize'], s['StartTime'],
@@ -196,8 +206,12 @@ class RDTClient(RTSPClient):
             self.out_file = open(self.factory.filename, 'wb')
             self.header = self.handleSdp(data)
             self.streamids = [i for i in range(self.header.prop.num_streams)]
-#            self.subscribe = ''.join('stream=%s;rule=2,' % i for i in self.streamids)[:-1]
-            self.subscribe = 'stream=0;rule=3,stream=0;rule=4,stream=1;rule=2,stream=1;rule=3'
+            self.subscribe = ''
+            for i,rules in self.streammatches.items():
+                for r in rules:
+                    self.subscribe += 'stream=%s;rule=%s,' % (i,r)
+            self.subscribe = self.subscribe[:-1] # Removes trailing comma
+            print(self.subscribe)
             self.out_file.write(self.header.dump())
             self.num_packets = 0
             self.data_size = 0
@@ -313,7 +327,7 @@ class RDTClient(RTSPClient):
                                    self.factory.port,
                                    self.factory.path)
         headers['Accept'] = 'application/sdp'
-#        self.sendHeader('Bandwidth', '9999999999999999999') #10485800
+#        headers['Bandwidth'] = str(self.factory.bandwidth)
         headers['GUID'] = self.factory.GUID
         headers['RegionData'] = '0'
         headers['ClientID'] = self.factory.clientID
@@ -338,9 +352,11 @@ class RDTClient(RTSPClient):
         headers['Transport'] = 'x-pn-tng/tcp;mode=play,rtp/avp/tcp;unicast;mode=play'
         self.sendSetup(target, headers)
 
-    def _sendSetParameter(self, key, value, headers={}):
+    def _sendSetParameter(self, key, value, headers=None):
         target = '%s://%s:%s%s' % (self.factory.scheme, self.factory.host,
                                    self.factory.port, self.factory.path)
+        if headers is None:
+            headers = {}
         headers['Session'] = self.session
         headers[key] = value
         self.sendSetParameter(target, headers)
@@ -384,7 +400,7 @@ class RDTClient(RTSPClient):
         if not self.sent_bandwidth:
             self.sent_bandwidth = True
             self._sendSetParameter('SetDeliveryBandwidth',
-                                   'Bandwidth=99999999999;BackOff=0')
+                              'Bandwidth=%s;BackOff=0' % self.factory.bandwidth)
             return True
         if not self.sent_play:
             self.sent_play = True
@@ -429,6 +445,7 @@ if __name__ == '__main__':
     log.startLogging(sys.stdout)
     factory = RTSPClientFactory(options.url, options.file)
     factory.protocol = RDTClient
+    factory.bandwidth = 99999999999
     factory.deferred.addCallback(success).addErrback(error)
     reactor.connectTCP(factory.host, factory.port, factory)
     reactor.callLater(1, progress, factory)
