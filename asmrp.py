@@ -210,7 +210,7 @@ class Asmrp:
                 num_matches += 1
             rule_num += 1
         return self.matches
-          
+
     @staticmethod
     def asmrp_match(rules, symbols):
         asmrp = Asmrp(rules, symbols)

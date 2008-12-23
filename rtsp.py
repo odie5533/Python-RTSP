@@ -13,11 +13,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from twisted.web import client
+from twisted.web import client, http, error
 from twisted.internet import defer, reactor
 from twisted.python import failure, log
 from twisted.protocols import basic
 from twisted.python.util import InsensitiveDict
+from twisted import internet
 from cStringIO import StringIO
 from urlparse import urlsplit
 import base64
@@ -26,6 +27,20 @@ import math
 import time
 import struct
 from md5 import md5
+
+class RTSPInterleavedWarning(Warning):
+    def __init__(self, message, data = None):
+        self.message = message
+        self.data = data
+    def __str__(self):
+        return self.message
+
+class RTSPStatusError(Exception):
+    def __init__(self, message, data = None):
+        self.message = message
+        self.data = data
+    def __str__(self):
+        return self.message
 
 class RTSPClient(basic.LineReceiver):
     """ Provides RTSP protocol """
@@ -94,7 +109,7 @@ class RTSPClient(basic.LineReceiver):
                 self.rtsp_length = struct.unpack('!H', header[2:4])[0]
                 self.length = self.rtsp_length
                 if self.length == 0:
-                    print('RTSP Interleaved length was 0!')
+                    raise RTSPInterleavedWarning('Interleaved length was 0.', header)
                 self.attach_buffer = StringIO()
                 self.setRawMode()
             if self.length:
@@ -165,7 +180,16 @@ class RTSPClient(basic.LineReceiver):
         """ Called when the status header is received """
         if status == '404':
             self.transport.loseConnection()
-            self.factory.error(failure.Failure('404'))
+            self.factory.error(failure.Failure(error.Error(http.NOT_FOUND)))
+            return
+        length = len(version) + len(status) + len(message)
+        if length > 50:
+            self.transport.loseConnection()
+            self.factory.error(
+                failure.Failure(
+                    RTSPStatusError(
+                        'Length of status message was too long: %s' % length,
+                        version)))
             return
         print('Status: %s %s %s' % (status,message,version))
 
