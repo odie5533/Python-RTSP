@@ -1,4 +1,21 @@
-# SDP/SDPPLIN Pythonic Parser
+# Pythonic SDP/SDPPLIN Parser
+# SDP = Session Description Protocol
+#
+# Copyright (C) 2008 David Bern
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 import base64
 
 def _parse_sdpplin_line(item):
@@ -8,8 +25,9 @@ def _parse_sdpplin_line(item):
     name = item.split(':')[0]
     value = item[len(name)+ 1:]
     if value.find(';') != -1:
-        type = value.split(';')[0]
-        value = value[len(type) + 1:]
+        #type = value.split(';')[0]
+        #value = value[len(type) + 1:]
+	type, sep, value = value.partition(';')
         if type == 'integer':
             value = int(value)
         if type == 'buffer':

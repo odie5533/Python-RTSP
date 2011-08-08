@@ -127,6 +127,8 @@ class RDTClient(RTSPClient):
     #    ..00 0011 = Asm Rule & 0x3F: 3
 
     def select_mlti_data(self, mlti_chunk, selection):
+        """ Takes a MLTI-chunk from an SDP OpaqueData and a rule selection
+        Returns the codec data based on the given rule selection """
         if not mlti_chunk.startswith('MLTI'):
             print('MLTI tag missing')
             return mlti_chunk
@@ -144,9 +146,9 @@ class RDTClient(RTSPClient):
         codecs = []
         for i in range(numcodecs):
             codec_length = struct.unpack('!I', mlti_chunk[idx:idx + 4])[0]
-            idx += 4
+            idx += 4 # skip over codec length integer
             codecs.append(mlti_chunk[idx:idx + codec_length])
-            idx += codec_length
+            idx += codec_length # skip over codec length worth of data
         return codecs[rules[selection]]
 
     def handleEndHeaders(self, headers):
@@ -163,8 +165,14 @@ class RDTClient(RTSPClient):
         try: abstract = sdp['Abstract']
         except KeyError: abstract = ''
         header.fileheader = rmff_fileheader_t(4 + sdp['StreamCount'])
-        header.cont = rmff_cont_t(sdp['Title'], sdp['Author'],
-                                  sdp['Copyright'], abstract)
+        try: title = sdp['Title']
+        except KeyError: title = ''
+        try: author = sdp['Author']
+        except KeyError: author = ''
+        try: copyright = sdp['Copyright']
+        except KeyError: copyright = ''
+        header.cont = rmff_cont_t(title, author,
+                                  copyright, abstract)
         header.data = rmff_data_t(0, 0)
 
         duration = 0
@@ -174,16 +182,26 @@ class RDTClient(RTSPClient):
         avg_packet_size = None
         
         self.streammatches = {}
+        
+        # the rulebook is sometimes truncated and spread across the streams
+        # not sure if this is common, or even the correct way to handle it
+        rulebook = ''.join([s['ASMRuleBook'] for s in sdp.streams])
+        symbols = {'Bandwidth':self.factory.bandwidth,'OldPNMPlayer':'0'}
+        rulematches, symbols = Asmrp.asmrp_match(rulebook, symbols)
+        # Avg packet size seems off
+        
         for s in sdp.streams:
-            # Avg packet size seems off
-            rulebook = s['ASMRuleBook']
-            symbols = {'Bandwidth':self.factory.bandwidth}
-            rulematches, symbols = Asmrp.asmrp_match(rulebook, symbols)
             self.streammatches[s['streamid']] = rulematches
             mlti = self.select_mlti_data(s['OpaqueData'], rulematches[0])
+            
+            # some streams don't have the starttime, but do have endtime
+            # and other meta data
+            try: start_time = s['StartTime']
+            except: start_time = 0
+            
             mdpr = rmff_mdpr_t(s['streamid'], s['MaxBitRate'],
                                s['AvgBitRate'], s['MaxPacketSize'],
-                               s['AvgPacketSize'], s['StartTime'],
+                               s['AvgPacketSize'], start_time,
                                s['Preroll'], s.duration,
                                s['StreamName'], s['mimetype'], mlti)
             header.streams.append(mdpr)
@@ -219,7 +237,8 @@ class RDTClient(RTSPClient):
         reactor.callLater(30, self.heartbeat)
 
     def handleContentResponse(self, data, content_type):
-        """ Called when the entire content-length has been received """
+        """ Called when the entire content-length has been received
+        Exepect to receive type application/sdp """
         f = open('sdp.txt', 'w')
         f.write(data)
         f.close()
@@ -235,7 +254,7 @@ class RDTClient(RTSPClient):
             self.subscribe = self.subscribe[:-1] # Removes trailing comma
             self.out_file.write(self.header.dump())
             self.num_packets = 0
-            self.data_size = 0
+            self.data_size = 0            
 
     def handleRDTData(self, data, rmff_ph):
         self.num_packets += 1

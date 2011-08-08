@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from twisted.web import client, http, error
-from twisted.internet import defer, reactor
+from twisted.internet import defer, reactor, protocol
 from twisted.python import failure, log
 from twisted.protocols import basic
 from twisted.python.util import InsensitiveDict
@@ -218,7 +218,7 @@ class RTSPClient(basic.LineReceiver):
     def sendNextMessage(self):
         """ Default method handles only the
         bare minimum Setup and Play messages
-        Override this in base classes to change behavior """
+        Override this in sub classes to change behavior """
         if not self.sent_setup:
             self.sent_setup = True
             self.sendSetup()
@@ -326,7 +326,7 @@ class RTSPClient(basic.LineReceiver):
 class RTSPClientFactory(client.HTTPClientFactory):
     """ Holds the RTSP default headers """
     protocol = RTSPClient
-    # The following 4 values are all related
+    # The following 4 values are all related and act as a complete handshake
     # Do not change them
     GUID = '00000000-0000-0000-0000-000000000000'
     CLIENT_CHALLENGE = '9e26d33f2984236010ef6253fb1887f7'
@@ -336,7 +336,7 @@ class RTSPClientFactory(client.HTTPClientFactory):
     agent = 'RealMedia Player Version 6.0.9.1235 (linux-2.0-libc6-i386-gcc2.95)'
     clientID = 'Linux_2.4_6.0.9.1235_play32_RN01_EN_586'
 
-    def __init__(self, url, filename, timeout=0, agent=None):
+    def __init__(self, url, filename, timeout=0, agent=None, *args, **kwargs):
         self.timeout = timeout
         if agent is None:
             agent = self.agent
@@ -349,6 +349,7 @@ class RTSPClientFactory(client.HTTPClientFactory):
         self.deferred = defer.Deferred()
 
     def setURL(self, url):
+        """ Parses given url into username, password, host, and port """
         self.url = url
         parsed_url = urlsplit(url)
         self.scheme, self.netloc, self.path, self.query, self.fragment = parsed_url
@@ -362,6 +363,13 @@ class RTSPClientFactory(client.HTTPClientFactory):
         self.port = parsed_url.port
         if self.port is None:
             self.port = 554
+
+    def buildProtocol(self, addr):
+        p = protocol.ClientFactory.buildProtocol(self, addr)
+        if self.timeout:
+            timeoutCall = reactor.callLater(self.timeout, p.timeout)
+            self.deferred.addBoth(self._cancelTimeout, timeoutCall)
+        return p
 
     def success(self, result):
         if self.waiting:

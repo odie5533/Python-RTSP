@@ -13,6 +13,8 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Logging can be enabled in the init method
 
 import logging
 
@@ -21,6 +23,9 @@ class RuleString:
     def __init__(self, string):
         self._str = string
         self.idx = 0
+        
+    def seek_end(self):
+        self.idx = len(self._str)-1
 
     def eof(self):
         return self.idx >= len(self._str)-1
@@ -55,11 +60,13 @@ class Asmrp:
 
     def __init__(self, rules, symbols):
         logger = logging.getLogger('ASMRP')
-#        logging.basicConfig(level=logging.DEBUG)
+# Uncomment the following to enable logging
+#        logging.basicConfig(level=logging.DEBUG, filename='asmrp.txt')
         
         self.logger = logger
         
         self.rules = rules
+        self.logger.debug('Rules: ' + rules)
         self.matches = []
         self.symbols = symbols
         self.special_chars.extend(self.eval_chars)
@@ -199,6 +206,10 @@ class Asmrp:
                     rules.nextChar()
                 if not rules.eof():
                     rules.nextChar()
+        else:
+            self.logger.debug('Unknown operator: %s' % oper)
+            rules.seek_end()
+            return False
 
     def asmrp_eval(self, rules):
         rules = RuleString(rules)
