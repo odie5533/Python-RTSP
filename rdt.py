@@ -33,6 +33,7 @@ import math
 import time
 import struct
 import re
+import hashlib
 from md5 import md5
 from rmff import *
 from rtsp import RTSPClient, RTSPClientFactory
@@ -46,6 +47,17 @@ def sizeof_fmt(num):
         if num < 1024.0:
             return "%3.1f%s" % (num, x)
         num /= 1024.0
+
+# http://lists.mplayerhq.hu/pipermail/mplayer-dev-eng/2008-March/056903.html
+def rn5_auth(username, realm, password, nonce, uuid):
+    MUNGE_TEMPLATE ='%-.200s%-.200s%-.200sCopyright (C) 1995,1996,1997 RealNetworks, Inc.'
+    authstr ="%-.200s:%-.200s:%-.200s" % (username, realm, password)
+    first_pass = hashlib.md5(authstr).hexdigest()
+
+    munged = MUNGE_TEMPLATE % (first_pass, nonce, uuid)
+    return hashlib.md5(munged).hexdigest()
+    print first_pass
+
 
 class RealChallenge(object):
     XOR_TABLE = [ 0x05, 0x18, 0x74, 0xd0, 0x0d, 0x09, 0x02, 0x53, 0xc0, 0x01,
@@ -62,28 +74,28 @@ class RealChallenge(object):
         buf = list()
         buf.extend( RealChallenge.AV_WB32('a1e9149d') )
         buf.extend( RealChallenge.AV_WB32('0e6b3b59') )
-        
+
         rc1 = rc1.strip()
-        
+
         if rc1:
             if len(rc1) == 40: rc1 = rc1[:32]
             if len(rc1) > 56: rc1 = rc1[:56]
             buf.extend( [ ord(i) for i in rc1 ] )
             buf.extend( [ 0 for i in range(0, 56 - len(rc1)) ] )
-        
+
         # xor challenge bytewise with xor_table
         for i in range(0, len(RealChallenge.XOR_TABLE)):
             buf[8 + i] ^= RealChallenge.XOR_TABLE[i];
-        
+
         sum = md5( ''.join([ chr(i) for i in buf ]) )
-        
+
         response = sum.hexdigest() + '01d0a8e3'
-        
+
         chksum = list()
         for i in range(0, 8):
             chksum.append(response[i * 4])
         chksum = ''.join(chksum)
-        
+
         return (response, chksum)
     compute = staticmethod(compute)
     AV_WB32 = staticmethod(AV_WB32)
@@ -102,6 +114,8 @@ class RDTClient(RTSPClient):
     sent_parameter = False
     sent_bandwidth = False
     sent_realchallenge2 = False
+    sent_rn5_auth = False
+    rn5_authdata = None
 
     EOF = 0xff06
     LATENCY_REPORT = 0xff08
@@ -154,6 +168,16 @@ class RDTClient(RTSPClient):
     def handleEndHeaders(self, headers):
         if headers.get('realchallenge1'):
             self.realchallenge1 = headers['realchallenge1'][0]
+        elif headers.get('www-authenticate', [''])[0].startswith('RN5'):
+            ##hack: resent describe header with auth
+            self.sent_describe = False
+            print 'RN5 Authendication'
+            self.rn5_authdata ={}
+            for authdate in headers['www-authenticate'][0][3:].split(','):
+                key, value = authdate.split('=')
+                ##remove "
+                self.rn5_authdata[key.strip()] = value[1:-1]
+
         if self.content_length is None:
             self.sendNextMessage()
 
@@ -180,25 +204,25 @@ class RDTClient(RTSPClient):
         avg_bit_rate = 0
         max_packet_size = 0
         avg_packet_size = None
-        
+
         self.streammatches = {}
-        
+
         # the rulebook is sometimes truncated and spread across the streams
         # not sure if this is common, or even the correct way to handle it
         rulebook = ''.join([s['ASMRuleBook'] for s in sdp.streams])
         symbols = {'Bandwidth':self.factory.bandwidth,'OldPNMPlayer':'0'}
         rulematches, symbols = Asmrp.asmrp_match(rulebook, symbols)
         # Avg packet size seems off
-        
+
         for s in sdp.streams:
             self.streammatches[s['streamid']] = rulematches
             mlti = self.select_mlti_data(s['OpaqueData'], rulematches[0])
-            
+
             # some streams don't have the starttime, but do have endtime
             # and other meta data
             try: start_time = s['StartTime']
             except: start_time = 0
-            
+
             mdpr = rmff_mdpr_t(s['streamid'], s['MaxBitRate'],
                                s['AvgBitRate'], s['MaxPacketSize'],
                                s['AvgPacketSize'], start_time,
@@ -254,7 +278,7 @@ class RDTClient(RTSPClient):
             self.subscribe = self.subscribe[:-1] # Removes trailing comma
             self.out_file.write(self.header.dump())
             self.num_packets = 0
-            self.data_size = 0            
+            self.data_size = 0
 
     def handleRDTData(self, data, rmff_ph):
         self.num_packets += 1
@@ -374,7 +398,22 @@ class RDTClient(RTSPClient):
         headers['SupportsMaximumASMBandwidth'] = '1'
         headers['Language'] = 'en-US'
         headers['Require'] = 'com.real.retain-entity-for-setup'
-        if self.factory.username is not None:
+        ##rn5 auth
+        if self.rn5_authdata:
+            authstring ='RN5 '
+            self.rn5_authdata['username'] = self.factory.username
+            self.rn5_authdata['GUID'] = '00000000-0000-0000-0000-000000000000'
+            self.rn5_authdata['response'] = \
+                    rn5_auth(nonce=self.rn5_authdata['nonce'],
+                             username=self.factory.username,
+                             password=self.factory.password,
+                             uuid=self.rn5_authdata['GUID'],
+                             realm=self.rn5_authdata['realm'])
+            ## a string like 'RN5 username="foo",realm="bla"...'
+            headers['Authorization'] = 'RN5 ' + ', '.join(
+                ['%s="%s"' % (key, val) for key,val in self.rn5_authdata.items()])
+
+        if not self.rn5_authdata and self.factory.username is not None:
             authstr = '%s:%s' % (self.factory.username,
                                  self.factory.password
                                  if self.factory.password else '')
@@ -419,6 +458,7 @@ class RDTClient(RTSPClient):
             self._sendOptions()
             return True
         if not self.sent_describe:
+            print 'sending describe'
             self.sent_describe = True
             self._sendDescribe()
             return True
